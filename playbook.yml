@@ -1,0 +1,108 @@
+- name: DevOps Challenge - Deploy Prometheus and Grafana
+  hosts: localhost
+  become: true
+  collections:
+    - community.docker
+
+  vars_prompt:
+    - name: grafana_admin_password
+      prompt: "Enter NEW Grafana admin password"
+      private: yes
+
+  tasks:
+    # ---------------------------
+    # Parte 1: Deploy dos serviços
+    # ---------------------------
+
+    - name: Copy Prometheus config to /tmp
+      copy:
+        src: prometheus/prometheus.yml
+        dest: /tmp/prometheus.yml
+
+    - name: Run Prometheus container
+      docker_container:
+        name: prometheus
+        image: prom/prometheus
+        state: started
+        restart_policy: always
+        recreate: yes
+        ports:
+          - "9090:9090"
+        volumes:
+          - /tmp/prometheus.yml:/etc/prometheus/prometheus.yml
+
+    - name: Run Grafana container
+      docker_container:
+        name: grafana
+        image: grafana/grafana
+        state: started
+        restart_policy: always
+        recreate: yes
+        ports:
+          - "3000:3000"
+        env:
+          GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+        volumes:
+          - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+          - ./grafana/dashboards:/var/lib/grafana/dashboards
+
+    - name: Run Node Exporter container
+      docker_container:
+        name: node-exporter
+        image: prom/node-exporter
+        state: started
+        restart_policy: always
+        ports:
+          - "9100:9100"
+
+    # ---------------------------
+    # Parte 2: Validações automáticas
+    # ---------------------------
+
+    - name: Wait for Prometheus port to be open
+      wait_for:
+        port: 9090
+        host: localhost
+        timeout: 15
+
+    - name: Wait for Grafana port to be open
+      wait_for:
+        port: 3000
+        host: localhost
+        timeout: 15
+
+    - name: Validate Prometheus container is running
+      docker_container_info:
+        name: prometheus
+      register: prometheus_info
+
+    - name: Ensure Prometheus is running
+      assert:
+        that:
+          - prometheus_info.container.State.Running
+        fail_msg: "Prometheus container is not running"
+
+    - name: Validate Grafana container is running
+      docker_container_info:
+        name: grafana
+      register: grafana_info
+
+    - name: Ensure Grafana is running
+      assert:
+        that:
+          - grafana_info.container.State.Running
+        fail_msg: "Grafana container is not running"
+
+    - name: Check if Prometheus is accessible on port 9090
+      uri:
+        url: http://localhost:9090
+        status_code: 200
+
+    - name: Check if Grafana is accessible on port 3000
+      uri:
+        url: http://localhost:3000
+        status_code: 200
+      register: grafana_check
+      retries: 5
+      delay: 5
+      until: grafana_check.status == 200
